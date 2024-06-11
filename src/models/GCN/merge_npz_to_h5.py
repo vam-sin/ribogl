@@ -2,9 +2,9 @@ import numpy as np
 import h5py 
 import os
 
-filename = '/net/lts2gdk0/mnt/scratch/lts2/nallapar/rb-prof/data/Jan_2024/Lina/full_Test_LIG_RiboGL.h5'
+filename = '/net/lts2gdk0/mnt/scratch/lts2/nallapar/rb-prof/data/Jan_2024/Lina/Test_Final_LXG_DSP.h5'
 
-input_folder = '/nfs_home/nallapar/final/riboclette/riboclette/ribogl_int'
+input_folder = '/nfs_home/nallapar/final/final_dirseqplus_int/'
 
 len_files = len(os.listdir(input_folder))
 
