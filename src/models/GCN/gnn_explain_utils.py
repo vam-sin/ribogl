@@ -486,7 +486,7 @@ class ConvModule(nn.Module):
             return x_in + x_out
 
 class ConvModuleNonEmbed(nn.Module):
-    def __init__(self, in_channels, out_channels, model_type, algo, edge_attr):
+    def __init__(self, in_channels, out_channels, model_type, algo, edge_attr, dropout_val=0.1):
         super().__init__()
 
         self.algo = algo
@@ -503,6 +503,14 @@ class ConvModuleNonEmbed(nn.Module):
         elif algo == 'GINE':
             self.conv_in = GINEConv(nn.Linear(in_channels, out_channels), edge_dim = 2)
             self.conv_out = GINEConv(nn.Linear(in_channels, out_channels), edge_dim = 2)
+        elif algo == 'GENConv':
+            conv = GENConv(in_channels, out_channels, aggr='mean', norm='layer')
+            norm = nn.LayerNorm(out_channels, elementwise_affine=True)
+            act = nn.ReLU(inplace=True)
+
+            self.conv_in = DeepGCNLayer(conv, norm, act, block='res+', dropout=dropout_val)
+            self.conv_out = DeepGCNLayer(conv, norm, act, block='res+', dropout=dropout_val)
+
         elif algo == 'TF':
             if edge_attr != 'Yes':
                 self.conv_in = TransformerConv(in_channels, out_channels, heads = 8, concat = False)
@@ -556,7 +564,7 @@ class GCN_LSTM(L.LightningModule):
     def __init__(self, gcn_layers, dropout_val, num_epochs, bs, lr, num_inp_ft, model_type, algo, edge_attr, virtual_node, random_walk, scheduler_alg):
         super().__init__()
 
-        if random_walk == 'Yes':
+        if random_walk:
             self.embedding = nn.Embedding(64, num_inp_ft - 32)
         else:
             self.embedding = nn.Embedding(64, num_inp_ft)
@@ -566,16 +574,16 @@ class GCN_LSTM(L.LightningModule):
         self.module_list = nn.ModuleList()
         self.graph_norm_list = nn.ModuleList()
 
-        self.module_list.append(ConvModuleNonEmbed(num_inp_ft, gcn_layers[0], model_type, algo, edge_attr)) 
+        self.module_list.append(ConvModuleNonEmbed(num_inp_ft, gcn_layers[0], model_type, algo, edge_attr, dropout_val)) 
         self.graph_norm_list.append(GraphNorm(gcn_layers[0]))
         
         for i in range(len(gcn_layers)-1):
-            self.module_list.append(ConvModuleNonEmbed(gcn_layers[i], gcn_layers[i+1], model_type, algo, edge_attr))
+            self.module_list.append(ConvModuleNonEmbed(gcn_layers[i], gcn_layers[i+1], model_type, algo, edge_attr, dropout_val))
             self.graph_norm_list.append(GraphNorm(gcn_layers[i+1]))
 
         self.dropout = nn.Dropout(dropout_val)
 
-        self.bilstm = nn.LSTM(np.sum(gcn_layers), 128, num_layers = 4, bidirectional=True)
+        self.bilstm = nn.LSTM(np.sum(gcn_layers), 128, num_layers = 4, bidirectional=True, dropout = dropout_val)
 
         self.linear = nn.Linear(256, 1)
         
@@ -603,7 +611,7 @@ class GCN_LSTM(L.LightningModule):
     def forward(self, batch):
         x = batch.x
 
-        if self.virtual_node == 'Yes':
+        if self.virtual_node:
             # set the last node to 16 (stop codon)
             x[-1] = 16
         
@@ -612,7 +620,7 @@ class GCN_LSTM(L.LightningModule):
         # embed the codon sequence x
         x = self.embedding(x)
 
-        if self.random_walk == 'Yes':
+        if self.random_walk:
             x = torch.concat((x, batch.random_walk_pe), dim=1)
 
         outputs = []
@@ -626,9 +634,11 @@ class GCN_LSTM(L.LightningModule):
                 # mean over final dimension
                 x = torch.mean(x, dim=2)
             
-            x = self.graph_norm_list[i](x)
-            x = self.relu(x)
-            x = self.dropout(x)
+            if self.algo != 'GENConv':
+                # because genconv already has this included
+                x = self.graph_norm_list[i](x)
+                x = self.relu(x)
+                x = self.dropout(x)
 
             outputs.append(x)
 
@@ -682,9 +692,9 @@ class GCN_LSTM(L.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr)
 
-        if self.scheduler_alg == 'CosineAnneal':
+        if self.scheduler_alg == 'CA':
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.num_epochs, eta_min=0)
-        elif self.scheduler_alg == 'Regular':
+        elif self.scheduler_alg == 'R':
             # reduce lr on plateau
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, verbose=True)
         
@@ -693,6 +703,7 @@ class GCN_LSTM(L.LightningModule):
         return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": monitor}
     
     def training_step(self, batch):
+        batch, filename = batch
 
         loss, perf, mae = self._get_loss(batch)
 
@@ -703,6 +714,7 @@ class GCN_LSTM(L.LightningModule):
         return loss
     
     def validation_step(self, batch):
+        batch, filename = batch
         loss, perf, mae = self._get_loss(batch)
 
         self.log('val_perf', perf)
@@ -712,6 +724,7 @@ class GCN_LSTM(L.LightningModule):
         return loss
     
     def test_step(self, batch):
+        batch, filename = batch
         loss, perf, mae = self._get_loss(batch)
 
         self.log('test_loss', loss)
@@ -1144,11 +1157,11 @@ class EnsembleLSTMEmbedswGCN(L.LightningModule):
         self.module_list = nn.ModuleList()
         self.graph_norm_list = nn.ModuleList()
 
-        self.module_list.append(ConvModule(num_inp_ft, gcn_layers[0], model_type, algo, edge_attr, cheb_k)) 
+        self.module_list.append(ConvModuleNonEmbed(256, gcn_layers[0], model_type, algo, edge_attr, dropout_val)) 
         self.graph_norm_list.append(GraphNorm(gcn_layers[0]))
         
         for i in range(len(gcn_layers)-1):
-            self.module_list.append(ConvModule(gcn_layers[i], gcn_layers[i+1], model_type, algo, edge_attr, cheb_k))
+            self.module_list.append(ConvModuleNonEmbed(gcn_layers[i], gcn_layers[i+1], model_type, algo, edge_attr, dropout_val))
             self.graph_norm_list.append(GraphNorm(gcn_layers[i+1]))
 
         self.linear_gcn = nn.Linear(np.sum(gcn_layers), 1)
@@ -1181,10 +1194,14 @@ class EnsembleLSTMEmbedswGCN(L.LightningModule):
         self.test_transcript_list = []
 
         ### LSTM Independent Functions
-        self.bilstm_model = LSTM.load_from_checkpoint('best_model.ckpt', dropout_val=0.1, num_epochs=50, bs=1, lr=1e-4)
-        self.bilstm_model.eval()
+        self.bilstm_model = nn.LSTM(num_inp_ft, 128, num_layers = 4, bidirectional=True, dropout = dropout_val)
 
     def forward(self, batch):
+        x = batch.x
+        ei = batch.edge_index
+        # get codon embeddings
+        x = self.embedding(x)
+
         ### GNN Model
         if self.capr:
             capr_oh = batch.capr
@@ -1194,43 +1211,43 @@ class EnsembleLSTMEmbedswGCN(L.LightningModule):
             capr_oh = capr_oh.reshape(-1, 3, 8)
             # concatenate over the 3 nts
             capr_oh = capr_oh.flatten(1, 2)
-
-        # get final layer embeddings from the lstm
-        x_in_gnn = self.bilstm_model(batch.x)
-        x_in_gnn = torch.squeeze(x_in_gnn, dim=1)
-
         if self.virtual_node:
             # set the last node to 16 (stop codon)
-            x_in_gnn[-1] = 16
-        
-        ei = batch.edge_index
-
+            x[-1] = 16
         if self.abs_pos_enc:
-            x_in_gnn = self.pos_enc(x_in_gnn)
-
+            x = self.pos_enc(x)
         if self.random_walk:
-            x_in_gnn = torch.concat((x_in_gnn, batch.random_walk_pe), dim=1)
-
+            x = torch.concat((x, batch.random_walk_pe), dim=1)
         if self.capr:
             # concatenate capr features
-            x_in_gnn = torch.cat((x_in_gnn, capr_oh), dim=1)
+            x = torch.cat((x, capr_oh), dim=1)
 
+        # get embeddings from the lstm
+        # bilstm final layer
+        h_0 = Variable(torch.zeros(8, 1, 128).cuda()) # (1, bs, hidden)
+        c_0 = Variable(torch.zeros(8, 1, 128).cuda()) # (1, bs, hidden)
+
+        x = x.unsqueeze(1)
+        x, (h_fin, c_fin) = self.bilstm_model(x, (h_0, c_0))
+        x = torch.squeeze(x, dim=1)
+
+        # use these embeddings as a feature for the gnn
         outputs = []
 
         for i in range(len(self.gcn_layers)):
-            x_in_gnn = self.module_list[i](x = x_in_gnn, ei = ei)
+            x = self.module_list[i](x = x, ei = ei)
             
             # only for GAT
             if self.algo == 'GAT' or self.algo == 'GATv2':
-                x_in_gnn = x_in_gnn.reshape(x_in_gnn.shape[0], self.gcn_layers[i], 8)
+                x = x.reshape(x.shape[0], self.gcn_layers[i], 8)
                 # mean over final dimension
-                x_in_gnn = torch.mean(x_in_gnn, dim=2)
+                x = torch.mean(x, dim=2)
 
-            x_in_gnn = self.graph_norm_list[i](x_in_gnn)
-            x_in_gnn = self.relu(x_in_gnn)
-            x_in_gnn = self.dropout(x_in_gnn)
+            x = self.graph_norm_list[i](x)
+            x = self.relu(x)
+            x = self.dropout(x)
 
-            outputs.append(x_in_gnn)
+            outputs.append(x)
 
         out_gcn = torch.cat(outputs, dim=1)
 
@@ -1278,7 +1295,7 @@ class EnsembleLSTMEmbedswGCN(L.LightningModule):
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.num_epochs, eta_min=0)
         elif self.scheduler_alg == 'R':
             # reduce lr on plateau
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, verbose=True)
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
         
         # add monitor
         monitor = 'val_loss'
@@ -1748,7 +1765,7 @@ def trainGCN(gcn_layers, num_epochs, bs, lr, save_loc, wandb_logger, train_loade
                 monitor='val_loss',
                 save_top_k=2),
             L.pytorch.callbacks.LearningRateMonitor("epoch"),
-            L.pytorch.callbacks.EarlyStopping(monitor="val_loss", patience=20),
+            L.pytorch.callbacks.EarlyStopping(monitor="val_loss", patience=10),
         ],
     )
     trainer.logger._log_graph = False  # If True, we plot the computation graph in tensorboard
