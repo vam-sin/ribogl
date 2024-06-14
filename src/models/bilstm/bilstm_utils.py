@@ -1,32 +1,24 @@
 # libraries
-import pandas as pd 
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
-from transformers import Trainer
-from sklearn.model_selection import train_test_split
 import itertools
 import os
 import lightning as L
-from scipy import sparse
 from torch.autograd import Variable
 
+# dictionary for converting codons into one-hot and vice versa
 id_to_codon = {idx:''.join(el) for idx, el in enumerate(itertools.product(['A', 'T', 'C', 'G'], repeat=3))}
 codon_to_id = {v:k for k,v in id_to_codon.items()}
 
-def slidingWindowZeroToNan(a, window_size=30):
-    '''
-    use a sliding window, if all the values in the window are 0, then replace them with nan
-    '''
-    a = np.asarray(a)
-    for i in range(len(a) - window_size):
-        if np.all(a[i:i+window_size] == 0.0):
-            a[i:i+window_size] = np.nan
-
-    return a
-
 class FileRiboDataset(Dataset):
+    '''
+    dataset class which creates a pytorch dataset given the following arguments
+    data_folder: the folder where the data is stored
+    dataset_split: the split of the dataset (train, test)
+    shuffle: whether to shuffle the dataset
+    '''
     def __init__(self, data_folder, dataset_split, shuffle):
         super().__init__()
 
@@ -48,13 +40,19 @@ class FileRiboDataset(Dataset):
         # load the file
         file_name = self.files[idx]
         data = torch.load(self.data_folder + self.dataset_split + '/' + self.files[idx])
+
+        # convert the codon_seq to one-hot
         data.x = torch.tensor([int(k) for k in data.x['codon_seq']], dtype=torch.long)
-        # data.x = data.x['calm_embeds']
+
+        # normalize the y values
         data.y = data.y / torch.nansum(data.y)
 
         return data.x, data.y, file_name
     
 class MaskedPearsonLoss(nn.Module):
+    '''
+    loss function which calculates the pearson correlation coefficient between the predicted and true values
+    '''
     def __init__(self):
         super().__init__()
     def __call__(self, y_pred, y_true, mask, eps=1e-6):
@@ -71,6 +69,9 @@ class MaskedPearsonLoss(nn.Module):
         return 1 - cos_val
     
 class MaskedPearsonCorr(nn.Module):
+    '''
+    metric class for the pearson correlation coefficient
+    '''
     def __init__(self):
         super().__init__()
     def __call__(self, y_pred, y_true, mask, eps=1e-6):
@@ -83,6 +84,9 @@ class MaskedPearsonCorr(nn.Module):
         )
 
 class MaskedL1Loss(nn.Module):
+    '''
+    loss function which calculates the l1 loss between the predicted and true values
+    '''
     def __init__(self):
         super().__init__()
 
@@ -94,6 +98,9 @@ class MaskedL1Loss(nn.Module):
         return torch.sqrt(loss.mean())
     
 class MaskedPCCL1Loss(nn.Module):
+    '''
+    loss function that incorporates both the pearson loss and the l1 loss together
+    '''
     def __init__(self):
         super().__init__()
         self.l1_loss = MaskedL1Loss()
@@ -110,50 +117,57 @@ class MaskedPCCL1Loss(nn.Module):
         return l1 + pcc, pcc, l1
 
 class LSTM(L.LightningModule):
+    '''
+    LSTM model for learning ribosome density values. this can be initialized with the following arguments:
+    dropout_val: dropout value for the LSTM
+    num_epochs: number of epochs to train the model
+    bs: batch size
+    lr: learning rate
+    '''
     def __init__(self, dropout_val, num_epochs, bs, lr):
         super().__init__()
 
+        # initializes a bidirectional long short term memory model with 4 layers of 128 nodes each
         self.bilstm = nn.LSTM(256, 128, num_layers = 4, bidirectional=True, dropout=dropout_val)
+        # learning embedding layer of 256 values
         self.embedding = nn.Embedding(64, 256)
-        self.initial_conv1d = nn.Conv1d(1, 1, 513, padding='valid')
+
+        # linear layer for final output
         self.linear = nn.Linear(256, 1)
         
+        # activation functions
         self.relu = nn.ReLU()
         self.softmax = nn.Softmax(dim=0)
         
+        # loss functions and performance metrics
         self.loss = MaskedPCCL1Loss()
         self.perf = MaskedPearsonCorr()
 
+        # hyperparameters
         self.lr = lr
         self.bs = bs
         self.num_epochs = num_epochs
-        self.perf_list = []
-        self.mae_list = []
-        self.out_tr = []
-        self.y_pred_list = []
-        self.y_true_list = []
-        self.filenames_list = []
 
     def forward(self, x):
-        # bilstm final layer
+        # bilstm initial hidden and cell states
         h_0 = Variable(torch.zeros(8, 1, 128).cuda()) # (1, bs, hidden)
         c_0 = Variable(torch.zeros(8, 1, 128).cuda()) # (1, bs, hidden)
 
-        # switch dims for lstm
+        # codon embeddings
         x = self.embedding(x)
-        print(x.shape)
         x = x.permute(1, 0, 2)
 
+        # pass through bilstm
         x, (fin_h, fin_c) = self.bilstm(x, (h_0, c_0))
 
         # linear out
         x = self.linear(x)
         x = x.squeeze(dim=1)
         
-        # extra for lstm
+        # dimension matching
         out = x.squeeze(dim=1)
 
-        # softmax
+        # output softmax
         out = self.softmax(out)
 
         return out
@@ -212,34 +226,17 @@ class LSTM(L.LightningModule):
         self.log('test_mae', mae)
         self.log('test_perf', perf)
 
-        # convert perf to float
-        perf = perf.item()
-        self.perf_list.append(perf)
-
-        self.mae_list.append(mae.item())
-
-        y = torch.squeeze(y, dim=0)
-
-        # append y_pred and y_true
-        self.y_pred_list.append(y_pred.detach().cpu().numpy())
-        self.y_true_list.append(y.detach().cpu().numpy())
-        self.filenames_list.append(file_name)
-
-        # if len(self.perf_list) == 1397:
-        #     # convert to df
-        #     df = pd.DataFrame({'perf_lstm': self.perf_list, 'mae_lstm': self.mae_list, 'y_pred_lstm': self.y_pred_list, 'y_true_lstm': self.y_true_list, 'filenames_lstm': self.filenames_list})
-        #     # save to csv
-        #     df.to_pickle('lstm_predictions.pkl')
-
         return loss
 
 class LSTMPred(L.LightningModule):
+    '''
+    additional version of the LSTM model made to predict ribosome density values
+    '''
     def __init__(self, dropout_val, num_epochs, bs, lr):
         super().__init__()
 
         self.bilstm = nn.LSTM(256, 128, num_layers = 4, bidirectional=True, dropout=dropout_val)
         self.embedding = nn.Embedding(64, 256)
-        self.initial_conv1d = nn.Conv1d(1, 1, 513, padding='valid')
         self.linear = nn.Linear(256, 1)
         
         self.relu = nn.ReLU()
@@ -251,12 +248,6 @@ class LSTMPred(L.LightningModule):
         self.lr = lr
         self.bs = bs
         self.num_epochs = num_epochs
-        self.perf_list = []
-        self.mae_list = []
-        self.out_tr = []
-        self.y_pred_list = []
-        self.y_true_list = []
-        self.filenames_list = []
 
     def forward(self, x):
         # bilstm final layer
@@ -336,34 +327,17 @@ class LSTMPred(L.LightningModule):
         self.log('test_mae', mae)
         self.log('test_perf', perf)
 
-        # convert perf to float
-        perf = perf.item()
-        self.perf_list.append(perf)
-
-        self.mae_list.append(mae.item())
-
-        y = torch.squeeze(y, dim=0)
-
-        # append y_pred and y_true
-        self.y_pred_list.append(y_pred.detach().cpu().numpy())
-        self.y_true_list.append(y.detach().cpu().numpy())
-        self.filenames_list.append(file_name)
-
-        # if len(self.perf_list) == 1397:
-        #     # convert to df
-        #     df = pd.DataFrame({'perf_lstm': self.perf_list, 'mae_lstm': self.mae_list, 'y_pred_lstm': self.y_pred_list, 'y_true_lstm': self.y_true_list, 'filenames_lstm': self.filenames_list})
-        #     # save to csv
-        #     df.to_pickle('lstm_predictions.pkl')
-
         return loss
 
 class LSTM_Captum(L.LightningModule):
+    '''
+    additional captum based lstm model to make the attributions
+    '''
     def __init__(self, dropout_val, num_epochs, bs, lr):
         super().__init__()
 
         self.bilstm = nn.LSTM(256, 128, num_layers = 4, bidirectional=True, dropout=dropout_val)
         self.embedding = nn.Embedding(64, 256)
-        self.initial_conv1d = nn.Conv1d(1, 1, 513, padding='valid')
         self.linear = nn.Linear(256, 1)
         
         self.relu = nn.ReLU()
@@ -375,12 +349,6 @@ class LSTM_Captum(L.LightningModule):
         self.lr = lr
         self.bs = bs
         self.num_epochs = num_epochs
-        self.perf_list = []
-        self.mae_list = []
-        self.out_tr = []
-        self.y_pred_list = []
-        self.y_true_list = []
-        self.filenames_list = []
 
     def forward(self, x, index_attr):
         # bilstm final layer
@@ -460,25 +428,6 @@ class LSTM_Captum(L.LightningModule):
         self.log('test_mae', mae)
         self.log('test_perf', perf)
 
-        # convert perf to float
-        perf = perf.item()
-        self.perf_list.append(perf)
-
-        self.mae_list.append(mae.item())
-
-        y = torch.squeeze(y, dim=0)
-
-        # append y_pred and y_true
-        self.y_pred_list.append(y_pred.detach().cpu().numpy())
-        self.y_true_list.append(y.detach().cpu().numpy())
-        self.filenames_list.append(file_name)
-
-        # if len(self.perf_list) == 1397:
-        #     # convert to df
-        #     df = pd.DataFrame({'perf_lstm': self.perf_list, 'mae_lstm': self.mae_list, 'y_pred_lstm': self.y_pred_list, 'y_true_lstm': self.y_true_list, 'filenames_lstm': self.filenames_list})
-        #     # save to csv
-        #     df.to_pickle('lstm_predictions.pkl')
-
         return loss
 
 def trainLSTM(num_epochs, bs, lr, save_loc, wandb_logger, train_loader, test_loader, dropout_val):
@@ -501,7 +450,7 @@ def trainLSTM(num_epochs, bs, lr, save_loc, wandb_logger, train_loader, test_loa
     trainer.logger._log_graph = False  # If True, we plot the computation graph in tensorboard
     trainer.logger._default_hp_metric = None  # Optional logging argument that we don't need
 
-    # Check whether pretrained model exists. If yes, load it and skip training
+    # create the model
     model = LSTM(dropout_val, num_epochs, bs, lr)
     # fit trainer
     trainer.fit(model, train_dataloaders = train_loader, val_dataloaders = test_loader)

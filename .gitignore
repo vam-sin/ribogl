@@ -7,27 +7,28 @@
 /src/feature_gen/rna_sstruct
 /src/feature_gen/tokenizer.py
 
-
-
+/src/models/bilstm/captum_plot.py
 /src/models/bilstm/__pycache__
 /src/models/bilstm/saved_models
 /src/models/bilstm/predictions
 /src/models/bilstm/wandb
 /src/models/bilstm/*.sh
 /src/models/bilstm/*.out
+/src/models/bilstm/bilstm_model.py
 
-/src/models/GCN/__pycache__
-/src/models/GCN/saved_models
-/src/models/GCN/*.sh
-/src/models/GCN/*.png 
-/src/models/GCN/*.csv 
-/src/models/GCN/*.out
-/src/models/GCN/*.svg
-/src/models/GCN/final_plots 
-/src/models/GCN/plots 
-/src/models/GCN/predictions
-/src/models/GCN/wandb 
-/src/models/GCN/bash_scripts
+/src/models/GNN/__pycache__
+/src/models/GNN/saved_models
+/src/models/GNN/*.sh
+/src/models/GNN/*.png 
+/src/models/GNN/*.csv 
+/src/models/GNN/*.out
+/src/models/GNN/*.svg
+/src/models/GNN/final_plots 
+/src/models/GNN/plots 
+/src/models/GNN/predictions
+/src/models/GNN/wandb 
+/src/models/GNN/bash_scripts
+/src/models/GNN/merge_npz_to_h5.py
 
 /src/models/xlnet
 

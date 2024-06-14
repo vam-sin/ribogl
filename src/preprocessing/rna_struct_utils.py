@@ -5,6 +5,9 @@ import RNA
 import itertools
 from scipy import sparse
 
+id_to_codon = {idx:''.join(el) for idx, el in enumerate(itertools.product(['A', 'T', 'C', 'G'], repeat=3))}
+codon_to_id = {v:k for k,v in id_to_codon.items()}
+
 def codonidx_to_ntsequence(codonidx_seq):
     codonidx_seq = codonidx_seq[1:-1].split(',')
     codonidx_seq = [int(k) for k in codonidx_seq]
@@ -29,18 +32,6 @@ def mergeNTGraphToCodonGraph(nt_adj_mat):
     codon_adj_mat = np.array(codon_adj_mat, dtype=np.int32)
 
     return codon_adj_mat
-
-id_to_codon = {idx:''.join(el) for idx, el in enumerate(itertools.product(['A', 'T', 'C', 'G'], repeat=3))}
-codon_to_id = {v:k for k,v in id_to_codon.items()}
-
-df_path = '/net/lts2gdk0/mnt/scratch/lts2/nallapar/rb-prof/data/Jan_2024/Lina/processed/mm/LIVER.csv'
-# load data
-df_full = pd.read_csv(df_path)
-
-print(df_full)
-
-# apply codonidx_to_ntsequence on codon_sequence column to get nt_sequence column
-df_full['sequence'] = df_full['codon_sequence'].apply(lambda x: codonidx_to_ntsequence(x))
 
 def getRNASS(nt_seq):
     ss, mf = RNA.fold(nt_seq)
@@ -72,21 +63,5 @@ def getRNASS(nt_seq):
     return adj
         
 
-# get sequences
-seqs = df_full['sequence'].tolist()
 
-# get embeddings
-ss_vecs_sparse = []
-
-for i in range(len(seqs)):
-    print(i, len(seqs))
-    ss_adj = getRNASS(seqs[i])
-    codon_ss_graph = mergeNTGraphToCodonGraph(ss_adj)
-    ss_vecs_sparse.append(sparse.csr_matrix(codon_ss_graph))
-
-df_full['codon_RNA_SS'] = ss_vecs_sparse
-
-df_full.to_pickle('/net/lts2gdk0/mnt/scratch/lts2/nallapar/rb-prof/data/Jan_2024/Lina/processed/mm/LIVER_VRNA_SS.pkl')
-
-print("Made Embeddings")
 
