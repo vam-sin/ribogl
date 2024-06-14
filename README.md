@@ -4,6 +4,8 @@ Repository of "Towards improving full-length ribosome density prediction by brid
 ## RiboGL Model
 
 ## Plotly Server
+
+![plot](./figures/circular_plot.png)
 Inside the `interpret` subfolder one can find the code to run the Plotly server to intepret the RiboGL predictions.
 
 In order to run the server:
