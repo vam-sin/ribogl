@@ -9,7 +9,7 @@ data.x = torch.tensor([int(k) for k in data.x['codon_seq']], dtype=torch.long)
 data.y = data.y / torch.nansum(data.y)
 
 # load bilstm model
-from utils import LSTM 
+from ribogl.src.models.bilstm.bilstm_utils import LSTM 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

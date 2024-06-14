@@ -3,38 +3,34 @@ model trained on only one dataset samples
 '''
 
 # libraries
-import numpy as np
-import pandas as pd 
-import torch
-from utils import trainLSTM, FileRiboDataset # custom dataset and trainer
-import random
-from torch.nn.utils.rnn import pad_sequence
-from torch import nn
+from bilstm_utils import trainLSTM, FileRiboDataset # custom dataset and trainer
 from torch.utils.data import DataLoader
-from torchmetrics.functional import pearson_corrcoef
-from torchmetrics import Metric
 import argparse
-from sklearn.model_selection import KFold
 from pytorch_lightning.loggers import WandbLogger
+import argparse
+import pytorch_lightning as pl
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--seed', type=int, default=42, help='seed value') # additional rna folding features with the category of the nts
+parser.add_argument('--dropout', type=float, default=0.1, help='seed value') # additional rna folding features with the category of the nts
+args = parser.parse_args()
 
 # reproducibility
-random.seed(42)
-np.random.seed(42)
-torch.manual_seed(42)
+pl.seed_everything(args.seed)
 
 # training arguments
-proc_data_folder = '/net/lts2gdk0/mnt/scratch/lts2/nallapar/rb-prof/data/Jan_2024/Lina/processed/mm/DirSeqPlusNoTransform/'
+proc_data_folder = 'DirSeqPlusRW/'
 tot_epochs = 50
 batch_size = 1
-dropout_val = 0.1
+dropout_val = args.dropout
 annot_thresh = 0.3
 longZerosThresh_val = 20
 percNansThresh_val = 0.05
 lr = 1e-4
 dilation = True 
-features = ['cbert_ae', 'codon_ss']
+features = ['embedding']
 features_str = '_'.join(features)
-model_name = 'LSTM DS: Liver ' + '[' + str(annot_thresh) + ', ' + str(longZerosThresh_val) + ', ' + str(percNansThresh_val) + ', BS ' + str(batch_size) + ', D ' + str(dropout_val) + ' E ' + str(tot_epochs) + ' LR ' + str(lr) + '] F: ' + features_str
+model_name = 'LSTM DS: Liver ' + '[' + str(annot_thresh) + ', ' + str(longZerosThresh_val) + ', ' + str(percNansThresh_val) + ', BS ' + str(batch_size) + ', D ' + str(dropout_val) + ' E ' + str(tot_epochs) + ' LR ' + str(lr) + ' Seed: ' + str(args.seed) + '] F: ' + features_str
 
 # start a new wandb run to track this script
 wandb_logger = WandbLogger(log_model="all", project="GCN_MM", name=model_name)
