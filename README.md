@@ -1,5 +1,5 @@
 # RiboGL
-Repository of "Towards improving full-length ribosome density prediction by bridging sequence and graph-based representations".
+Repository of "Towards improving full-length ribosome density prediction by bridging sequence and graph-based representations". The dataset files can be found here: https://zenodo.org/records/12180308
 
 ## RiboGL Model
 
