@@ -19,12 +19,15 @@ from plotly.subplots import make_subplots
 from scipy.spatial.distance import jensenshannon
 from scipy.stats import pearsonr, wasserstein_distance
 from waitress import serve
+from tqdm.auto import trange
 
 from configuration import PLOT_COLORS
 
 
 ATT_H5_FNAME = "RiboGL_Attributions.h5"
 DATA_DIRPATH = "data"
+ENSEMBL_DIRPATH = "data"
+
 
 def sigmoid(z):
     return 1 / (1 + np.exp(-z))
@@ -38,7 +41,7 @@ def extract_gene_symbol(input_string):
 
 data = []
 with open(
-    os.path.join(DATA_DIRPATH, "ensembl.cds.fa"),
+    os.path.join(ENSEMBL_DIRPATH, "ensembl.cds.fa"),
     mode="r",
 ) as handle:
     for record in SeqIO.parse(handle, "fasta"):
@@ -105,7 +108,7 @@ with h5py.File(
     n_sequences = f["y_true"].shape[0]
 
 metrics = defaultdict(list)
-for idx in range(n_sequences):
+for idx in trange(n_sequences, desc="Preprocessing data"):
     y_true, y_pred = _get_y_true(idx), _get_y_pred(idx)
     mask = ~np.isnan(y_true)
     metrics["transcript"].append(str(_get_trancript(idx), encoding="utf-8"))
@@ -564,4 +567,4 @@ if __name__ == "__main__":
 
     print(f"Starting server on port {port}...")
     serve(app.server, host="0.0.0.0", port=port)
-    #app.run(debug=True)
+    # app.run(debug=True)
