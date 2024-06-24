@@ -1,5 +1,6 @@
 import argparse
 import re
+import os
 from collections import defaultdict
 from itertools import chain
 
@@ -22,14 +23,11 @@ from waitress import serve
 from configuration import PLOT_COLORS
 
 
+ATT_H5_FNAME = "RiboGL_Attributions.h5"
+DATA_DIRPATH = "data"
+
 def sigmoid(z):
     return 1 / (1 + np.exp(-z))
-
-
-# https://plotly.com/python/v3/chord-diagram/
-
-DFPATH = "data/exp_dat_testLiver.csv"
-global_df = pd.read_csv(DFPATH).assign(id=lambda dd: dd.index)
 
 
 def extract_gene_symbol(input_string):
@@ -39,7 +37,10 @@ def extract_gene_symbol(input_string):
 
 
 data = []
-with open("data/ensembl.cds.fa", mode="r") as handle:
+with open(
+    os.path.join(DATA_DIRPATH, "ensembl.cds.fa"),
+    mode="r",
+) as handle:
     for record in SeqIO.parse(handle, "fasta"):
         data.append(
             [record.id, str(record.seq), extract_gene_symbol(record.description)]
@@ -50,43 +51,67 @@ df_trans_to_seq = pd.DataFrame(data, columns=["transcript", "sequence", "gene_sy
 
 
 def _get_y_true(idx):
-    with h5py.File("data/test_truth_normSoftmax_final_FULL.h5", "r") as f:
-        return np.array(f["input_x_gradient"][idx])
+    with h5py.File(
+        os.path.join(DATA_DIRPATH, ATT_H5_FNAME),
+        "r",
+    ) as f:
+        return np.array(f["y_true"][idx])
+
+
+def _get_trancript(idx):
+    with h5py.File(
+        os.path.join(DATA_DIRPATH, ATT_H5_FNAME),
+        "r",
+    ) as f:
+        return np.array(f["transcript"][idx])
 
 
 def _get_y_pred(idx):
-    with h5py.File("data/test_preds_normSoftmax_final_FULL.h5", "r") as f:
-        return np.array(f["input_x_gradient"][idx])
+    with h5py.File(
+        os.path.join(DATA_DIRPATH, ATT_H5_FNAME),
+        "r",
+    ) as f:
+        return np.array(f["y_pred"][idx])
 
 
 def _get_node_attr(idx):
-    with h5py.File("data/test_node_attr_final_FULL.h5", "r") as f:
-        return np.array(f["input_x_gradient"][idx])
+    with h5py.File(
+        os.path.join(DATA_DIRPATH, ATT_H5_FNAME),
+        "r",
+    ) as f:
+        return np.array(f["node_attr"][idx])
 
 
 def _get_edge_attr(idx):
-    with h5py.File("data/test_edge_attr_final_FULL.h5", "r") as f:
-        return np.array(f["input_x_gradient"][idx])
+    with h5py.File(
+        os.path.join(DATA_DIRPATH, ATT_H5_FNAME),
+        "r",
+    ) as f:
+        return np.array(f["edge_attr"][idx])
 
 
 def _get_idxs_attr(idx):
-    with h5py.File("data/indices_final_FULL.h5", "r") as f:
-        return f["input_x_gradient"][idx]
+    with h5py.File(
+        os.path.join(DATA_DIRPATH, ATT_H5_FNAME),
+        "r",
+    ) as f:
+        return f["edge_index"][idx]
 
+
+with h5py.File(
+    os.path.join(DATA_DIRPATH, ATT_H5_FNAME),
+    "r",
+) as f:
+    n_sequences = f["y_true"].shape[0]
 
 metrics = defaultdict(list)
-for idx in range(len(global_df)):
+for idx in range(n_sequences):
     y_true, y_pred = _get_y_true(idx), _get_y_pred(idx)
     mask = ~np.isnan(y_true)
-    metrics["JSD"].append(jensenshannon(y_true[mask], y_pred[mask]))
+    metrics["transcript"].append(str(_get_trancript(idx), encoding="utf-8"))
     metrics["PCC"].append(pearsonr(y_true[mask], y_pred[mask])[0])
-    metrics["WASS"].append(np.log(wasserstein_distance(y_true[mask], y_pred[mask])))
 
-rowData = (
-    global_df.merge(df_trans_to_seq)
-    .drop(["norm_counts", "cov_mod"], axis=1)
-    .assign(**metrics)
-)
+rowData = pd.DataFrame(metrics).merge(df_trans_to_seq).assign(id=lambda df: df.index)
 
 app = Dash()
 
@@ -169,20 +194,16 @@ def plot_graph(selected_row, clickData):
     if ctx.triggered_id == "datatable":
         clickData = None
     sample_idx = selected_row[0]["id"] if selected_row else 0
-    sparse_adj = sp.sparse.load_npz(f"data/npz/sample_{sample_idx}.npz")
-    nx_graph = nx.from_scipy_sparse_array(sparse_adj)
-    nx_graph.remove_node(len(nx_graph.nodes()) - 1)
     y_true = _get_y_true(sample_idx)  # [:-1]
-    y_pred = _get_y_pred(sample_idx)[:-1]
+    y_pred = _get_y_pred(sample_idx)
     n_codons = len(y_true)
-    idxs_attr = _get_idxs_attr(sample_idx)
-    node_attr = _get_node_attr(sample_idx).reshape(10, n_codons)[:, :-1]
-    edge_index = np.load(f"data/test_np/sample_{sample_idx}.npy")
-    edge_attr = _get_edge_attr(sample_idx).reshape(
-        idxs_attr.shape[0],
-        3,
-        edge_index.shape[1],
-    )
+    idxs_attr = _get_idxs_attr(sample_idx).reshape(2, -1).astype(int)
+    adj_matrix = np.zeros((n_codons, n_codons))
+    for x, y in idxs_attr.T:
+        adj_matrix[x, y] = 1
+    nx_graph = nx.from_numpy_array(adj_matrix)
+    node_attr = _get_node_attr(sample_idx).reshape(n_codons, n_codons)
+    edge_attr = _get_edge_attr(sample_idx).reshape(n_codons, 3, -1)
     edge_attr = np.swapaxes(edge_attr, 1, 2)
     sequence = rowData.iloc[sample_idx].sequence
     sequence = re.findall("...", sequence)
@@ -221,45 +242,43 @@ def plot_graph(selected_row, clickData):
     )
     data.append(edge_trace)
     if clickData:
-        codon_idx = int(clickData["points"][0]["text"])
-        if codon_idx in idxs_attr:
-            attr_idx = np.where(idxs_attr == codon_idx)[0][0]
-            edge_weight = np.full((n_codons + 1, n_codons + 1), np.nan)
-            for a, b, w in edge_attr[attr_idx]:
-                if np.any(np.array([a, b]) == n_codons):
+        attr_idx = int(clickData["points"][0]["text"])
+        edge_weight = np.full((n_codons + 1, n_codons + 1), np.nan)
+        for a, b, w in edge_attr[attr_idx]:
+            if np.any(np.array([a, b]) == n_codons):
+                continue
+            a, b = int(a), int(b)
+            edge_weight[a][b] = np.abs(w)
+        threshold = np.quantile(edge_weight[~np.isnan(edge_weight)], 0.95)
+        first = True
+        for a in range(n_codons):
+            for b in range(a + 1, n_codons):
+                w1, w2 = edge_weight[a][b], edge_weight[b][a]
+                if np.all(np.isnan([w1, w2])):
                     continue
-                a, b = int(a), int(b)
-                edge_weight[a][b] = np.abs(w)
-            threshold = np.quantile(edge_weight[~np.isnan(edge_weight)], 0.95)
-            first = True
-            for a in range(n_codons):
-                for b in range(a + 1, n_codons):
-                    w1, w2 = edge_weight[a][b], edge_weight[b][a]
-                    if np.all(np.isnan([w1, w2])):
-                        continue
-                    w = np.nanmean([w1, w2])
-                    if w < threshold:
-                        continue
-                    w = w / np.nanmax(edge_weight) * 100
-                    r0, theta0 = to_custom_polar(a)
-                    r1, theta1 = to_custom_polar(b)
-                    red_rgb = px.colors.hex_to_rgb(PLOT_COLORS["edge_attrib"])
-                    line_trace = go.Scatterpolar(
-                        r=[r0, r1],
-                        theta=[theta0, theta1],
-                        line=dict(
-                            width=1.5,
-                            color=f"rgba({red_rgb[0]}, {red_rgb[1]}, {red_rgb[2]}, {w})",
-                        ),
-                        hoverinfo="none",
-                        mode="lines",
-                        thetaunit="radians",
-                        legendgroup="1",
-                        name="important edges",
-                        showlegend=first,
-                    )
-                    first = False
-                    data.append(line_trace)
+                w = np.nanmean([w1, w2])
+                if w < threshold:
+                    continue
+                w = w / np.nanmax(edge_weight) * 100
+                r0, theta0 = to_custom_polar(a)
+                r1, theta1 = to_custom_polar(b)
+                red_rgb = px.colors.hex_to_rgb(PLOT_COLORS["edge_attrib"])
+                line_trace = go.Scatterpolar(
+                    r=[r0, r1],
+                    theta=[theta0, theta1],
+                    line=dict(
+                        width=1.5,
+                        color=f"rgba({red_rgb[0]}, {red_rgb[1]}, {red_rgb[2]}, {w})",
+                    ),
+                    hoverinfo="none",
+                    mode="lines",
+                    thetaunit="radians",
+                    legendgroup="1",
+                    name="important edges",
+                    showlegend=first,
+                )
+                first = False
+                data.append(line_trace)
 
     node_r = []
     node_theta = []
@@ -330,43 +349,42 @@ def plot_graph(selected_row, clickData):
 
     if clickData:
         codon_idx = int(clickData["points"][0]["text"])
-        if codon_idx in idxs_attr:
-            attr_idx = np.where(idxs_attr == codon_idx)[0][0]
-            temp_node_attr = node_attr[attr_idx]
-            temp_node_attr = np.abs(temp_node_attr)
-            max_attr = 4 * np.max(temp_node_attr)
-            ann_r = list(
-                chain.from_iterable(
-                    (base_r, base_r + a / max_attr, np.nan) for a in temp_node_attr
-                )
+        attr_idx = codon_idx
+        temp_node_attr = node_attr[attr_idx]
+        temp_node_attr = np.abs(temp_node_attr)
+        max_attr = 4 * np.max(temp_node_attr)
+        ann_r = list(
+            chain.from_iterable(
+                (base_r, base_r + a / max_attr, np.nan) for a in temp_node_attr
             )
-            y_theta = list(
-                chain.from_iterable((theta, theta, np.nan) for theta in node_theta)
-            )
-            node_attr_trace = go.Scatterpolar(
-                r=ann_r,
-                theta=y_theta,
-                marker=dict(line_width=2, color=px.colors.qualitative.Plotly[4]),
-                thetaunit="radians",
-                mode="lines",
-                name="codon importance",
-            )
-            data.append(node_attr_trace)
-            r0, theta0 = to_custom_polar(codon_idx)
-            selected_node_trace = go.Scatterpolar(
-                r=[base_r + y_true[codon_idx] / max_y],
-                theta=[node_theta[codon_idx]],
-                thetaunit="radians",
-                marker=dict(
-                    symbol="circle-open",
-                    size=8,
-                    line=dict(width=4),
-                    color=px.colors.qualitative.Plotly[1],
-                ),
-                name="selected annotation",
-                mode="markers",
-            )
-            data.append(selected_node_trace)
+        )
+        y_theta = list(
+            chain.from_iterable((theta, theta, np.nan) for theta in node_theta)
+        )
+        node_attr_trace = go.Scatterpolar(
+            r=ann_r,
+            theta=y_theta,
+            marker=dict(line_width=2, color=px.colors.qualitative.Plotly[4]),
+            thetaunit="radians",
+            mode="lines",
+            name="codon importance",
+        )
+        data.append(node_attr_trace)
+        r0, theta0 = to_custom_polar(codon_idx)
+        selected_node_trace = go.Scatterpolar(
+            r=[base_r + y_true[codon_idx] / max_y],
+            theta=[node_theta[codon_idx]],
+            thetaunit="radians",
+            marker=dict(
+                symbol="circle-open",
+                size=8,
+                line=dict(width=4),
+                color=px.colors.qualitative.Plotly[1],
+            ),
+            name="selected annotation",
+            mode="markers",
+        )
+        data.append(selected_node_trace)
 
     r0, theta0 = to_custom_polar(0)
     arrow_trace = go.Scatterpolar(
@@ -418,17 +436,14 @@ def make_sequence_graph(selected_row, clickData):
     if ctx.triggered_id == "datatable":
         clickData = None
     sample_idx = selected_row[0]["id"] if selected_row else 0
-    sparse_adj = sp.sparse.load_npz(f"data/npz/sample_{sample_idx}.npz")
-    nx_graph = nx.from_scipy_sparse_array(sparse_adj)
-    nx_graph.remove_node(len(nx_graph.nodes()) - 1)
-    y_true = _get_y_true(sample_idx)[:-1]
-    y_pred = _get_y_pred(sample_idx)[:-1]
+    y_true = _get_y_true(sample_idx)
+    y_pred = _get_y_pred(sample_idx)
     max_density = np.max(np.concatenate((y_true, y_pred)))
     n_codons = len(y_true)
     sequence = rowData.iloc[sample_idx].sequence
     sequence = re.findall("...", sequence)
     idxs_attr = _get_idxs_attr(sample_idx)
-    node_attr = _get_node_attr(sample_idx).reshape(10, n_codons + 1)[:, :-1]
+    node_attr = _get_node_attr(sample_idx).reshape(n_codons, n_codons)
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
@@ -472,7 +487,7 @@ def make_sequence_graph(selected_row, clickData):
     shapes = []
     if clickData:
         codon_idx = int(clickData["points"][0]["text"])
-        attr_idx = np.where(idxs_attr == codon_idx)[0][0]
+        attr_idx = codon_idx
 
     if attr_idx:
         temp_node_attr = node_attr[attr_idx]
@@ -548,5 +563,5 @@ if __name__ == "__main__":
     port = args.port
 
     print(f"Starting server on port {port}...")
-    # serve(app.server, host="0.0.0.0", port=port)
-    app.run(debug=True)
+    serve(app.server, host="0.0.0.0", port=port)
+    #app.run(debug=True)
